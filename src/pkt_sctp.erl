@@ -34,7 +34,12 @@
 
 -export([codec/1]).
 
--spec codec(binary()) -> {#sctp{}, binary()}.
+-spec codec(binary() | #sctp{}) -> {#sctp{}, binary()} | binary().
+codec(#sctp{sport = Sport, dport = Dport, vtag = Vtag, chunks = Chunks}) ->
+    Chunks = list_to_binary([encode_chunk(C) || C <- Chunks]),
+    X = <<Sport:16, Dport:16, Vtag:32, 0:32, Chunks/binary>>,
+    Sum = pkt_crc32c:crc32c(X),
+    <<Sport:16, Dport:16, Vtag:32, Sum:32, Chunks/binary>>;
 codec(<<SPort:16, DPort:16, VTag:32, Sum:32, Payload/binary>>) ->
     {Chunks, Other} = decode_chunks(Payload, []),
     SCTP = #sctp{
@@ -47,6 +52,21 @@ codec(<<SPort:16, DPort:16, VTag:32, Sum:32, Payload/binary>>) ->
     {SCTP, Other}.
 
 %% Internal functions
+
+encode_chunk(#sctp_chunk{type = Type, i = I, u = U, b = B, e = E, payload = P}) ->
+    Flags = <<0:4, I:1, U:1, B:1, E:1>>,
+    Payload = encode_payload(P),
+    Length = byte_size(Payload)+4,
+    Pad = pad(chunk_pad_len(Length)),
+    <<Type:8, Flags:1/binary, Length:16, Payload/binary, Pad/binary>>.
+
+pad(0) -> <<>>;
+pad(1) -> <<0>>;
+pad(2) -> <<0,0>>;
+pad(3) -> <<0,0,0>>.
+
+encode_payload(#sctp_chunk_data{tsn = T, sid = Sid, ssn = Ssn, ppi = P, data = D}) ->
+    <<T:32, Sid:16, Ssn:16, P:32, D/binary>>.
 
 decode_chunks(Chunks, Acc) ->
     case chunk_len(Chunks) < byte_size(Chunks) of
